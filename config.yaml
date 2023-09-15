@@ -1,0 +1,108 @@
+# ModelArguments
+model_name_or_path: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/models/chinese-macbert-base
+tokenizer_name_or_path: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/models/chinese-macbert-base
+use_fast_tokenizer: True
+# resume
+resume_from_checkpoint: null
+# problem_type: single_label_classification/multi_label_classification # 多分类：一段文本对应一个标签/多标签分类：一段文本对应多个标签
+problem_type: multi_label_classification
+# task_type: mrc_for_classification/classification # 阅读理解任务/分类任务
+task_type: classification
+# loss_type: CrossEntropyLoss/FocalLoss/ZLPR/BCEWithLogitsLoss # 多分类：CrossEntropyLoss/多标签分类：BCEWithLogitsLoss
+loss_type: BCEWithLogitsLoss
+# model_type: customerBert/bert
+model_type: customerBert
+# label_weights
+# label_weights: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/exhibition_hall/seller/data/d0912/label_count_d0912.json
+
+# DataTrainingArguments
+train_file: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/exhibition_hall/seller/data/d0912/hf_data/train_d0912.json
+eval_file: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/exhibition_hall/seller/data/d0912/hf_data/eval_d0912.json
+test_file: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/exhibition_hall/seller/data/d0912/hf_data/test_d0912.json
+label2id_file: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/exhibition_hall/seller/data/d0822/label2id.json
+preprocessing_num_workers: 1
+max_length: 128
+padding: true
+truncation: true
+# cache_dir: 和训练数据集保持同一路径
+cache_dir: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/exhibition_hall/seller/data/d0912/hf_data/tokenizer_cache
+
+# flash-attn
+# flash_attn: true
+
+# TrainingArguments
+# output： 
+output_dir: /mnt/bn/fulei-v6-hl-nas-mlx/mlx/workspace/exhibition_hall/seller/data/d0912/model_output/bert_for_cls_weight_loss_0912
+overwrite_output_dir: true
+do_train: true
+do_eval: true
+do_predict: true
+
+# train steps、epochs、batch_size
+per_device_eval_batch_size: 16
+per_device_train_batch_size: 16
+# gradient_accumulation_steps: 0
+num_train_epochs: 30
+# max_steps: -1
+# auto_find_batch_size: false #  Whether to find a batch size that will fit into memory automatically through exponential decay, avoiding CUDA Out-of-Memory errors. Requires accelerate to be installed (`pip install accelerate`)
+
+# data
+# dataloader_num_workers: 8
+# dataloader_pin_memory: true
+
+# wandb
+wandb_project: saas_exhibition
+wandb_name: saas_exhibition_bert_for_cls_0912
+wandb_notes: saas_exhibition
+
+# eval
+evaluation_strategy: epoch
+metric_for_best_model: f1
+# eval_accumulation_steps: null
+# eval_delay: 0
+# eval_steps: 100
+
+# lr
+lr_scheduler_type: linear
+learning_rate: 0.00002
+
+# warmup
+warmup_ratio: 0.1
+# warmup_steps: 0
+
+# AdamW optimizer
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1.0e-08
+weight_decay: 0.01
+optim: adamw_torch_fused
+# optim_args: null
+
+# logging
+logging_steps: 100
+logging_strategy: steps
+
+# save
+# save_steps: 200
+save_strategy: epoch
+save_total_limit: 10
+
+# seed
+seed: 42
+data_seed: 42
+
+# mlx precision
+# bf16: true
+# bf16_full_eval: true
+# fp16: false
+# half_precision_backend: auto
+# fp16_full_eval: false
+# fp16_opt_level: O1
+# tf32: false
+
+# deepspeed
+# deepspeed: ds_zero2.json
+
+# other
+gradient_checkpointing: false
+load_best_model_at_end: true
