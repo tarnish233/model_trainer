@@ -1,0 +1,1 @@
+python3 train_token_and_sequence_classification.py multi_task_config.yaml

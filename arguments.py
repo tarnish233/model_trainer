@@ -21,6 +21,7 @@ class DataTrainingArguments:
     eval_file: str = field(default=None)
     test_file: str = field(default=None)
     label2id_file: str = field(default=None)
+    token2id_file: str = field(default=None)
     max_length: int = field(default=128)
     preprocessing_num_workers: int = field(default=4)
     padding: Optional[bool] = field(default=True)

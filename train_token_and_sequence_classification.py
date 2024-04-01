@@ -10,10 +10,10 @@ import pandas as pd
 import torch
 from datasets import load_dataset
 from sklearn.preprocessing import MultiLabelBinarizer
-from transformers import (
+from transformers import (  # DataCollatorForTokenClassification,
     BertConfig,
     BertForSequenceClassification,
-    BertTokenizer,
+    BertTokenizerFast,
     DataCollatorWithPadding,
     HfArgumentParser,
     Trainer,
@@ -23,13 +23,20 @@ from transformers import (
 import wandb
 from arguments import DataTrainingArguments, ModelArguments, MyTrainingArguments
 from logging_utils import logger
-from model_outputs import MultiTaskBertForSequenceAndTokenClassifierOutput
-from modeling import CustomerBertForSequenceClassification
-from tools import eval_multi_label_classification_metrics
+from model_data_collator import DataCollatorForSequenceAndTokenClassification
+from modeling import (
+    CustomerBertForSequenceClassification,
+    MultiTaskBertForSequenceAndTokenClassification,
+)
+from tools import (
+    eval_multi_label_classification_metrics,
+    token_label_classification_metrics,
+)
 
 MODEL_CLASSES = {
     "bert": BertForSequenceClassification,
     "customerBert": CustomerBertForSequenceClassification,
+    "multitaskbert": MultiTaskBertForSequenceAndTokenClassification,
 }
 
 
@@ -50,10 +57,17 @@ set_seed(training_args.seed)
 def load_label2id(label2id_file):
     with open(label2id_file) as f:
         label2id = json.load(f)
-
         id2label = {value: key for key, value in label2id.items()}
         num_labels = len(label2id)
     return label2id, id2label, num_labels
+
+
+def load_token2id(token2id_file):
+    with open(token2id_file) as f:
+        token2id = json.load(f)
+        id2token = {value: key for key, value in token2id.items()}
+        num_token_labels = len(token2id)
+    return token2id, id2token, num_token_labels
 
 
 def build_dataset(
@@ -113,6 +127,39 @@ def build_dataset(
                 tokenized_examples["labels"] = labels
             return tokenized_examples
 
+    elif task_type == "token_and_sequence_classification":
+
+        def process_function(examples):
+            batch_tokens = [list(sentence) for sentence in examples["sentence"]]
+            tokenized_examples = tokenizer(
+                batch_tokens,
+                max_length=data_args.max_length,
+                truncation=data_args.truncation,
+                is_split_into_words=True,
+                # padding=data_args.padding,
+            )
+            # squenece label
+            if problem_type == "single_label_classification":
+                tokenized_examples["labels"] = examples["label"]
+            else:
+                labels = mlb.fit_transform(examples["label"]).astype("float32")
+                tokenized_examples["labels"] = labels
+
+            # token label
+            token_labels = []
+            for i, label in enumerate(examples["token_labels"]):
+                word_ids = tokenized_examples.word_ids(batch_index=i)
+                token_label_ids = []
+                for word_id in word_ids:
+                    if word_id is None:
+                        token_label_ids.append(-100)
+                    else:
+                        token_label_ids.append(label[word_id])
+                token_labels.append(token_label_ids)
+            tokenized_examples["token_labels"] = token_labels
+
+            return tokenized_examples
+
     tokenized_datasets = shuffled_datasets.map(
         process_function,
         batched=True,
@@ -135,6 +182,36 @@ def load_class_modelmetrics():
     # evaluate_metrics = evaluate.combine(["accuracy", "f1", "precision", "recall"])
 
 
+def token_and_sequence_eval_metric(eval_predict):
+    logits, labels = eval_predict
+    cla_logits, token_logits = logits
+    labels, token_labels = labels
+    # logger.info("logits: {}".format(logits))
+    # logger.info("labels: {}".format(labels))
+    if model_args.problem_type == "single_label_classification":
+        predictions = np.argmax(cla_logits, axis=-1)
+    elif model_args.problem_type == "multi_label_classification":
+        predictions = torch.sigmoid(torch.tensor(cla_logits))
+        predictions = (predictions > 0.5).int().numpy()
+    cls_scores, _ = eval_multi_label_classification_metrics(
+        predictions,
+        labels,
+        labels=list(label2id.values()),
+        target_names=list(label2id.keys()),
+        average="micro",
+    )
+    token_predictions = np.argmax(token_logits, axis=-1)
+    token_scores, _ = token_label_classification_metrics(
+        id2token,
+        token_predictions,
+        token_labels,
+        average="micro",
+    )
+    scores = {**cls_scores, **token_scores}
+
+    return scores
+
+
 def eval_metric(eval_predict):
     logits, labels = eval_predict
     if model_args.problem_type == "single_label_classification":
@@ -154,11 +231,17 @@ def eval_metric(eval_predict):
 
 if __name__ == "__main__":
     label2id, id2label, num_labels = load_label2id(data_args.label2id_file)
+
+    if data_args.task_type == "token_and_sequence_classification":
+        token2id, id2token, num_token_labels = load_token2id(data_args.token2id_file)
+
     mlb = MultiLabelBinarizer(classes=range(num_labels))
     config = BertConfig.from_pretrained(model_args.model_name_or_path)
     config.loss_type = model_args.loss_type
     config.problem_type = model_args.problem_type
     config.num_labels = num_labels
+    if data_args.task_type == "token_and_sequence_classification":
+        config.num_token_labels = num_token_labels
     # label_weights
     config.label_weights = None
     if model_args.label_weights is not None:
@@ -176,10 +259,11 @@ if __name__ == "__main__":
     )
     model.config.id2label = id2label
     model.config.label2id = label2id
+    if data_args.task_type == "token_and_sequence_classification":
+        model.config.token2id = token2id
+        model.config.id2token = id2token
 
-    tokenizer = BertTokenizer.from_pretrained(
-        model_args.tokenizer_name_or_path, use_fast=model_args.use_fast_tokenizer
-    )
+    tokenizer = BertTokenizerFast.from_pretrained(model_args.tokenizer_name_or_path)
 
     # load metrics
     acc_metric, f1_metirc, precision_metric, recall_metric = load_class_modelmetrics()
@@ -198,6 +282,18 @@ if __name__ == "__main__":
     )
 
     logger.info(tokenized_datasets["train"][0])
+    # logger.info(len(tokenized_datasets["train"][0]["token_labels"]))
+    # logger.info(len(tokenized_datasets["train"][0]["input_ids"]))
+
+    # data_collator & eval_metric
+    if data_args.task_type == "token_and_sequence_classification":
+        my_data_collator = DataCollatorForSequenceAndTokenClassification(
+            tokenizer=tokenizer
+        )
+        eval_metric = token_and_sequence_eval_metric
+    else:
+        my_data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+        eval_metric = eval_metric
 
     # trainer
     trainer = Trainer(
@@ -205,7 +301,7 @@ if __name__ == "__main__":
         args=training_args,
         train_dataset=tokenized_datasets["train"],
         eval_dataset=tokenized_datasets["eval"],
-        data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
+        data_collator=my_data_collator,
         compute_metrics=eval_metric,
     )
     if trainer.is_world_process_zero():
@@ -247,26 +343,35 @@ if __name__ == "__main__":
         logger.info("***** Running prediction *****")
 
         predictions = trainer.predict(tokenized_datasets["test"])
-        label_ids = predictions.label_ids
         metrics = predictions.metrics
-        predictions = predictions.predictions
+
+        if data_args.task_type == "token_and_sequence_classification":
+            label_ids = predictions.label_ids
+            labels, token_labels = label_ids
+
+            predictions = predictions.predictions
+            cla_logits, token_logits = predictions
+        else:
+            labels = predictions.label_ids
+            cla_logits = predictions.predictions
+
+        # sequence label
         if model_args.problem_type == "single_label_classification":
-            predictions = np.argmax(predictions, axis=-1)
-            prediction_labels = [id2label[item] for item in predictions]
-            true_labels = [id2label[item] for item in label_ids]
+            cla_predictions = np.argmax(cla_logits, axis=-1)
+            prediction_labels = [id2label[item] for item in cla_predictions]
+            true_labels = [id2label[item] for item in labels]
 
         elif model_args.problem_type == "multi_label_classification":
-            predictions = torch.sigmoid(torch.tensor(predictions))
-            predictions = (predictions > 0.5).int().numpy()
-            prediction_label_ids = [np.where(item == 1)[0] for item in predictions]
+            cla_predictions = torch.sigmoid(torch.tensor(cla_logits))
+            cla_predictions = (cla_predictions > 0.5).int().numpy()
+            # 将预测结果转换为标签
+            prediction_label_ids = [np.where(item == 1)[0] for item in cla_predictions]
             prediction_labels = [
-                [id2label[item] for item in prediction_label_id]
-                for prediction_label_id in prediction_label_ids
+                [id2label[item] for item in label_ids]
+                for label_ids in prediction_label_ids
             ]
-            true_label_ids = [np.where(item == 1)[0] for item in label_ids]
             true_labels = [
-                [id2label[item] for item in true_label_id]
-                for true_label_id in true_label_ids
+                [id2label[item] for item in label_ids] for label_ids in labels
             ]
 
         # 保存预测结果
@@ -282,9 +387,10 @@ if __name__ == "__main__":
             header=True,
         )
 
+        # metrics
         scores, report = eval_multi_label_classification_metrics(
-            predictions,
-            label_ids,
+            cla_predictions,
+            labels,
             labels=list(label2id.values()),
             target_names=list(label2id.keys()),
             average="weighted",
@@ -299,8 +405,59 @@ if __name__ == "__main__":
             lambda x: "{:.2f}%".format(x * 100)
         )
         report.to_csv(
-            os.path.join(training_args.output_dir, "report.csv"), mode="w", header=True
+            os.path.join(
+                training_args.output_dir, "sequence_classification_report.csv"
+            ),
+            mode="w",
+            header=True,
         )
+
+        # token_label
+        if data_args.task_type == "token_and_sequence_classification":
+            token_predictions = np.argmax(token_logits, axis=-1)
+            # 将预测结果转换为标签
+            token_predictions = [
+                [id2token[item] for item in label_ids]
+                for label_ids in token_predictions
+            ]
+            token_labels = [
+                [id2token[item] for item in label_ids] for label_ids in token_labels
+            ]
+            # 保存预测结果
+            pd.DataFrame(
+                {
+                    "sentence": tokenized_datasets["test"]["sentence"],
+                    "labels": token_labels,
+                    "pred_labels": token_predictions,
+                }
+            ).to_csv(
+                os.path.join(
+                    training_args.output_dir, "test_data_token_predictions.csv"
+                ),
+                mode="w",
+                header=True,
+            )
+
+            # metrics
+            token_scores, token_report = token_label_classification_metrics(
+                id2token,
+                token_predictions,
+                token_labels,
+                average="micro",
+            )
+            token_report = pd.DataFrame(token_report).T
+            # 将precision、recall、f1保存为百分数
+            token_report["precision"] = token_report["precision"].apply(
+                lambda x: "{:.2f}%".format(x * 100)
+            )
+            token_report.to_csv(
+                os.path.join(
+                    training_args.output_dir, "token_classification_report.csv"
+                ),
+                mode="w",
+                header=True,
+            )
+
         metrics["test_samples"] = len(tokenized_datasets["test"])
         trainer.log_metrics("test", metrics)
         trainer.save_metrics("test", metrics)

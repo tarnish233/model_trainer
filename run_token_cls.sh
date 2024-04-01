@@ -1,0 +1,1 @@
+python3 train_token_classification.py token_cls.yaml
